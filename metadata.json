@@ -1,0 +1,6 @@
+{
+  "name": "FOD Detector",
+  "description": "Moteur universel hors ligne de détection, d'observation passive et de rétro-ingénierie factuelle du mécanisme Fingerprint On Display (FOD) avec support ROOT et export /sdcard/FOD/.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

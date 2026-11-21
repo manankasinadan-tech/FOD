@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">FOD Detector</string>
+    <string name="notif_channel_id">fod_monitoring_channel</string>
+    <string name="notif_channel_name">Surveillance passive FOD</string>
+    <string name="notif_channel_desc">Maintient la collecte passive et la détection des événements d\'enregistrement FOD en arrière-plan.</string>
+    <string name="notif_title_monitoring">FOD Detector — Surveillance active</string>
+    <string name="notif_title_investigating">FOD Detector — Investigation en cours</string>
+    <string name="notif_action_stop">Suspendre</string>
+    <string name="notif_action_reconstruct">Finaliser</string>
+    <string name="nav_cockpit">Cockpit</string>
+    <string name="nav_mechanism">Mécanisme</string>
+    <string name="nav_discoveries">Découvertes</string>
+    <string name="nav_settings">Paramètres</string>
+    <string name="cd_fod_emblem">Emblème de télémétrie FOD</string>
+    <string name="cd_status_indicator">Indicateur d\'état du capteur</string>
+</resources>
