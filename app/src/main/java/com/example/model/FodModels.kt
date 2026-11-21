@@ -49,7 +49,8 @@ enum class ComponentCategory(val label: String) {
     OVERLAY_RRO("Overlay RRO / Ressource"),
     KERNEL_MODULE("Module / Pilote Kernel"),
     FRAMEWORK_CLASS("Composant Framework"),
-    SYSTEM_APP("Paquet / Service Biométrique")
+    SYSTEM_APP("Paquet / Service Biométrique"),
+    PERMISSION_XML("Permission / Manifest XML")
 }
 
 enum class MechanismLayer(val label: String, val order: Int) {
@@ -203,6 +204,26 @@ data class DetectedModification(
     val rawProof: String
 )
 
+/**
+ * Représentation mise à plat d'un HAL biométrique/FOD sous forme de fiche pseudo-source pour portage.
+ */
+data class FlattenedHalArtifact(
+    val id: String,
+    val serviceName: String,
+    val interfaceType: String,
+    val binaryPath: String,
+    val sharedLibraries: List<String> = emptyList(),
+    val dtNeededDependencies: List<String> = emptyList(),
+    val exportedSymbols: List<String> = emptyList(),
+    val referencedNodes: List<String> = emptyList(),
+    val initRcBlocks: List<String> = emptyList(),
+    val permissionEntries: List<String> = emptyList(),
+    val selinuxContexts: List<String> = emptyList(),
+    val vintfEntries: List<String> = emptyList(),
+    val flattenedSourceSpec: String = "",
+    val evidenceLevel: EvidenceLevel = EvidenceLevel.FAIT_VERIFIE
+)
+
 data class MechanismStageNode(
     val layer: MechanismLayer,
     val status: StageStatus,
@@ -234,9 +255,74 @@ data class ExportedFileEntry(
 data class ExportSessionState(
     val sessionId: String = "",
     val sessionDirectoryPath: String = "",
+    val zipFilePath: String = "",
     val isPrimarySdcardFod: Boolean = false,
     val pendingSyncToSdcard: Boolean = false,
     val exportedFiles: List<ExportedFileEntry> = emptyList(),
     val lastExportIso: String = "",
     val exportMessage: String = ""
+)
+
+data class ImportedFodSession(
+    val sourceLabel: String,
+    val sessionId: String,
+    val manufacturerModel: String,
+    val romType: RomType,
+    val romLabel: String,
+    val androidRelease: String,
+    val sdkInt: Int,
+    val rootActive: Boolean,
+    val outcome: ReconstructionOutcome,
+    val outcomeLabel: String,
+    val mechanismSummary: String,
+    val causalExecutionPath: List<String>,
+    val firstBreakDescription: String?,
+    val firstBreakProof: String?,
+    val flattenedHals: List<FlattenedHalArtifact>,
+    val components: List<DiscoveredComponent>,
+    val modifications: List<DetectedModification>,
+    val properties: Map<String, String>,
+    val sysfsNodes: Map<String, String>,
+    val rcBlocks: List<String>,
+    val permissionEntries: List<String>,
+    val eventsCount: Int
+)
+
+enum class DiffSeverity(val label: String) {
+    MISSING_IN_B("MANQUANT DANS B"),
+    DIVERGENT("DIVERGENCE"),
+    PRESENT_IN_BOTH("PRÉSENT DANS A & B"),
+    EXTRA_IN_B("SPÉCIFIQUE À B")
+}
+
+data class ComparisonDiffItem(
+    val id: String,
+    val layerName: String,
+    val elementName: String,
+    val severity: DiffSeverity,
+    val detailInA: String,
+    val detailInB: String,
+    val portingImpact: String
+)
+
+data class PortingActionItem(
+    val priority: String,
+    val layer: String,
+    val title: String,
+    val factualReason: String
+)
+
+data class FodComparisonReport(
+    val sessionA: ImportedFodSession,
+    val sessionB: ImportedFodSession,
+    val mechanismASummary: String,
+    val mechanismBSummary: String,
+    val workingFactorsInA: List<String>,
+    val findingsInB: List<String>,
+    val diffs: List<ComparisonDiffItem>,
+    val portingChecklist: List<PortingActionItem>,
+    val missingCount: Int,
+    val divergentCount: Int,
+    val matchedCount: Int,
+    val generatedAtIso: String
 )

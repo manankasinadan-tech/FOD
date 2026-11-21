@@ -17,10 +17,13 @@ import com.example.model.RomType
 import com.example.model.StageStatus
 import java.util.concurrent.atomic.AtomicInteger
 
+import com.example.model.FlattenedHalArtifact
+
 data class AnalysisSynthesis(
     val components: List<DiscoveredComponent>,
     val dependencies: List<ComponentDependency>,
     val modifications: List<DetectedModification>,
+    val flattenedHals: List<FlattenedHalArtifact>,
     val reconstruction: MechanismReconstruction
 )
 
@@ -257,6 +260,38 @@ object CausalReconstructionEngine {
             )
         }
 
+        // 6b. Permissions XML & VINTF manifests
+        artifacts.halBundle.permissionXmlContents.forEach { (path, content) ->
+            components.add(
+                DiscoveredComponent(
+                    id = "cmp-${idCounter.getAndIncrement()}",
+                    name = path.substringAfterLast('/'),
+                    category = ComponentCategory.PERMISSION_XML,
+                    layer = MechanismLayer.FRAMEWORK,
+                    pathOrIdentifier = path,
+                    status = "Déclaration permission biométrique",
+                    evidenceLevel = EvidenceLevel.FAIT_VERIFIE,
+                    rawProof = content.take(400),
+                    discoveryWave = 2
+                )
+            )
+        }
+        artifacts.halBundle.vintfManifestContents.forEach { (path, content) ->
+            components.add(
+                DiscoveredComponent(
+                    id = "cmp-${idCounter.getAndIncrement()}",
+                    name = "VINTF: ${path.substringAfterLast('/')}",
+                    category = ComponentCategory.PERMISSION_XML,
+                    layer = MechanismLayer.HAL_BINDER,
+                    pathOrIdentifier = path,
+                    status = "Manifeste HAL VINTF",
+                    evidenceLevel = EvidenceLevel.FAIT_VERIFIE,
+                    rawProof = content.take(400),
+                    discoveryWave = 2
+                )
+            )
+        }
+
         // 7. Graphe de dépendances causales entre couches réellement observées
         val distinctLayersPresent = components.groupBy { it.layer }
         val orderedLayers = MechanismLayer.entries.sortedBy { it.order }
@@ -372,6 +407,7 @@ object CausalReconstructionEngine {
             components = components,
             dependencies = dependencies,
             modifications = modifications,
+            flattenedHals = artifacts.halBundle.flattenedHals,
             reconstruction = reconstruction
         )
     }

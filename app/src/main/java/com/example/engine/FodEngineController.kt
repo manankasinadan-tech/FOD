@@ -19,6 +19,7 @@ import com.example.model.DiscoveredComponent
 import com.example.model.EnginePhase
 import com.example.model.EvidenceLevel
 import com.example.model.ExportSessionState
+import com.example.model.FlattenedHalArtifact
 import com.example.model.FodEvent
 import com.example.model.MechanismReconstruction
 import com.example.model.PermissionsState
@@ -45,6 +46,7 @@ data class FodEngineState(
     val components: List<DiscoveredComponent> = emptyList(),
     val dependencies: List<ComponentDependency> = emptyList(),
     val modifications: List<DetectedModification> = emptyList(),
+    val flattenedHals: List<FlattenedHalArtifact> = emptyList(),
     val reconstruction: MechanismReconstruction? = null,
     val exportState: ExportSessionState = ExportSessionState(),
     val rawArtifacts: RawCollectorArtifacts = RawCollectorArtifacts(),
@@ -170,6 +172,7 @@ object FodEngineController {
             components = synthesis.components,
             dependencies = synthesis.dependencies,
             modifications = synthesis.modifications,
+            flattenedHals = synthesis.flattenedHals,
             reconstruction = synthesis.reconstruction,
             artifacts = baseArtifacts
         )
@@ -183,6 +186,7 @@ object FodEngineController {
             components = synthesis.components,
             dependencies = synthesis.dependencies,
             modifications = synthesis.modifications,
+            flattenedHals = synthesis.flattenedHals,
             reconstruction = synthesis.reconstruction,
             exportState = exportState,
             rawArtifacts = baseArtifacts,
@@ -309,6 +313,7 @@ object FodEngineController {
                         components = synthesis.components,
                         dependencies = synthesis.dependencies,
                         modifications = synthesis.modifications,
+                        flattenedHals = synthesis.flattenedHals,
                         reconstruction = synthesis.reconstruction,
                         artifacts = updatedArtifacts
                     )
@@ -319,6 +324,7 @@ object FodEngineController {
                         components = synthesis.components,
                         dependencies = synthesis.dependencies,
                         modifications = synthesis.modifications,
+                        flattenedHals = synthesis.flattenedHals,
                         reconstruction = synthesis.reconstruction,
                         rawArtifacts = updatedArtifacts,
                         exportState = exportState,
@@ -347,6 +353,7 @@ object FodEngineController {
                         components = synthesis.components,
                         dependencies = synthesis.dependencies,
                         modifications = synthesis.modifications,
+                        flattenedHals = synthesis.flattenedHals,
                         reconstruction = synthesis.reconstruction,
                         rawArtifacts = merged
                     )
@@ -453,6 +460,7 @@ object FodEngineController {
                     components = synthesis.components,
                     dependencies = synthesis.dependencies,
                     modifications = synthesis.modifications,
+                    flattenedHals = synthesis.flattenedHals,
                     reconstruction = synthesis.reconstruction,
                     artifacts = waveArtifacts
                 )
@@ -462,6 +470,7 @@ object FodEngineController {
                     components = synthesis.components,
                     dependencies = synthesis.dependencies,
                     modifications = synthesis.modifications,
+                    flattenedHals = synthesis.flattenedHals,
                     reconstruction = synthesis.reconstruction,
                     rawArtifacts = waveArtifacts,
                     exportState = exportState
@@ -559,6 +568,7 @@ object FodEngineController {
             components = synthesis.components,
             dependencies = synthesis.dependencies,
             modifications = synthesis.modifications,
+            flattenedHals = synthesis.flattenedHals,
             reconstruction = synthesis.reconstruction,
             artifacts = newArtifacts
         )
@@ -569,6 +579,7 @@ object FodEngineController {
             components = synthesis.components,
             dependencies = synthesis.dependencies,
             modifications = synthesis.modifications,
+            flattenedHals = synthesis.flattenedHals,
             reconstruction = synthesis.reconstruction,
             rawArtifacts = newArtifacts,
             exportState = exportState,
@@ -607,6 +618,7 @@ object FodEngineController {
             components = synthesis.components,
             dependencies = synthesis.dependencies,
             modifications = synthesis.modifications,
+            flattenedHals = synthesis.flattenedHals,
             reconstruction = synthesis.reconstruction,
             artifacts = finalArtifacts
         )
@@ -615,6 +627,7 @@ object FodEngineController {
             components = synthesis.components,
             dependencies = synthesis.dependencies,
             modifications = synthesis.modifications,
+            flattenedHals = synthesis.flattenedHals,
             reconstruction = synthesis.reconstruction,
             rawArtifacts = finalArtifacts,
             exportState = exportState,
@@ -653,7 +666,7 @@ object FodEngineController {
         isServiceActive: Boolean
     ): PermissionsState {
         val storageGranted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            android.os.Environment.isExternalStorageManager()
+            runCatching { android.os.Environment.isExternalStorageManager() }.getOrDefault(false)
         } else {
             ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE) ==
                 PackageManager.PERMISSION_GRANTED
@@ -713,6 +726,13 @@ object FodEngineController {
     }
 
     private fun mergeArtifacts(base: RawCollectorArtifacts, extra: RawCollectorArtifacts): RawCollectorArtifacts {
+        val mergedHalBundle = HalExtractionBundle(
+            flattenedHals = (extra.halBundle.flattenedHals.ifEmpty { base.halBundle.flattenedHals }),
+            rcFileContents = base.halBundle.rcFileContents + extra.halBundle.rcFileContents,
+            permissionXmlContents = base.halBundle.permissionXmlContents + extra.halBundle.permissionXmlContents,
+            vintfManifestContents = base.halBundle.vintfManifestContents + extra.halBundle.vintfManifestContents,
+            selinuxContextLines = (base.halBundle.selinuxContextLines + extra.halBundle.selinuxContextLines).distinct()
+        )
         return RawCollectorArtifacts(
             rawDumps = base.rawDumps + extra.rawDumps,
             matchedProperties = base.matchedProperties + extra.matchedProperties,
@@ -725,7 +745,8 @@ object FodEngineController {
             resolvedSettingsTargets = (base.resolvedSettingsTargets + extra.resolvedSettingsTargets).distinct(),
             enrolledTemplateCount = extra.enrolledTemplateCount ?: base.enrolledTemplateCount,
             logcatLines = (base.logcatLines + extra.logcatLines).distinct().takeLast(300),
-            collectorNotes = (base.collectorNotes + extra.collectorNotes).distinct()
+            collectorNotes = (base.collectorNotes + extra.collectorNotes).distinct(),
+            halBundle = mergedHalBundle
         )
     }
 }

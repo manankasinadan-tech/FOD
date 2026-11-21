@@ -13,10 +13,12 @@ import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountTree
 import androidx.compose.material.icons.filled.BugReport
+import androidx.compose.material.icons.filled.CompareArrows
 import androidx.compose.material.icons.filled.Radar
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.outlined.AccountTree
 import androidx.compose.material.icons.outlined.BugReport
+import androidx.compose.material.icons.outlined.CompareArrows
 import androidx.compose.material.icons.outlined.Radar
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.Icon
@@ -39,6 +41,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.R
 import com.example.data.UserSettings
@@ -46,7 +49,9 @@ import com.example.engine.FodEngineState
 import com.example.model.EvidenceLevel
 import com.example.ui.theme.ObsidianBg
 import com.example.ui.theme.SlateSurface
+import com.example.viewmodel.ComparatorUiState
 import com.example.viewmodel.MainTab
+import java.io.File
 
 private data class NavItemSpec(
     val tab: MainTab,
@@ -60,6 +65,7 @@ private val navItems = listOf(
     NavItemSpec(MainTab.COCKPIT, R.string.nav_cockpit, Icons.Filled.Radar, Icons.Outlined.Radar, "nav_cockpit"),
     NavItemSpec(MainTab.MECHANISM, R.string.nav_mechanism, Icons.Filled.AccountTree, Icons.Outlined.AccountTree, "nav_mechanism"),
     NavItemSpec(MainTab.DISCOVERIES, R.string.nav_discoveries, Icons.Filled.BugReport, Icons.Outlined.BugReport, "nav_discoveries"),
+    NavItemSpec(MainTab.COMPARATOR, R.string.nav_comparator, Icons.Filled.CompareArrows, Icons.Outlined.CompareArrows, "nav_comparator"),
     NavItemSpec(MainTab.SETTINGS, R.string.nav_settings, Icons.Filled.Settings, Icons.Outlined.Settings, "nav_settings")
 )
 
@@ -67,6 +73,7 @@ private val navItems = listOf(
 fun FodAppShell(
     currentTab: MainTab,
     engineState: FodEngineState,
+    comparatorState: ComparatorUiState,
     userSettings: UserSettings,
     toastMessage: String?,
     onClearToast: () -> Unit,
@@ -77,6 +84,12 @@ fun FodAppShell(
     onStartNewSession: () -> Unit,
     onRequestStoragePermission: () -> Unit,
     onSyncToSdcardFod: () -> Unit,
+    onExportZip: () -> Unit,
+    onImportZipSlotA: () -> Unit,
+    onImportZipSlotB: () -> Unit,
+    onImportLocalZip: (Boolean, File) -> Unit,
+    onUseLiveSession: (Boolean) -> Unit,
+    onClearComparator: () -> Unit,
     onToggleRoot: (Boolean) -> Unit,
     onRunRootTest: () -> Unit,
     onRequestNotificationPermission: () -> Unit,
@@ -124,7 +137,15 @@ fun FodAppShell(
                                         contentDescription = label
                                     )
                                 },
-                                label = { Text(label, maxLines = 1) },
+                                label = {
+                                    Text(
+                                        text = label,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        maxLines = 1,
+                                        softWrap = false,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                },
                                 modifier = Modifier.testTag(item.testTag)
                             )
                         }
@@ -154,7 +175,14 @@ fun FodAppShell(
                                         contentDescription = label
                                     )
                                 },
-                                label = { Text(label, maxLines = 1) },
+                                label = {
+                                    Text(
+                                        text = label,
+                                        maxLines = 1,
+                                        softWrap = false,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                },
                                 modifier = Modifier.testTag(item.testTag)
                             )
                         }
@@ -199,7 +227,17 @@ fun FodAppShell(
 
                         MainTab.DISCOVERIES -> DiscoveriesScreen(
                             state = engineState,
-                            onInspectProof = { inspectedProof = it }
+                            onInspectProof = { inspectedProof = it },
+                            onExportZip = onExportZip
+                        )
+
+                        MainTab.COMPARATOR -> ComparatorScreen(
+                            comparatorState = comparatorState,
+                            onImportZipFromPickerA = onImportZipSlotA,
+                            onImportZipFromPickerB = onImportZipSlotB,
+                            onImportLocalZip = onImportLocalZip,
+                            onUseLiveSession = onUseLiveSession,
+                            onClearComparator = onClearComparator
                         )
 
                         MainTab.SETTINGS -> SettingsScreen(

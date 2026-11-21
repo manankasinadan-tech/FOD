@@ -11,6 +11,7 @@
     <string name="nav_cockpit">Cockpit</string>
     <string name="nav_mechanism">Mécanisme</string>
     <string name="nav_discoveries">Découvertes</string>
+    <string name="nav_comparator">Comparateur</string>
     <string name="nav_settings">Paramètres</string>
     <string name="cd_fod_emblem">Emblème de télémétrie FOD</string>
     <string name="cd_status_indicator">Indicateur d\'état du capteur</string>

@@ -134,4 +134,58 @@ object ShellExecutor {
             )
         }
     }
+
+    /**
+     * Lecture binaire strictement en lecture seule (bornée à maxBytes) pour l'analyse ELF64 en mémoire.
+     */
+    suspend fun readBinaryReadOnly(
+        path: String,
+        useRoot: Boolean,
+        maxBytes: Int = 3 * 1024 * 1024
+    ): ByteArray? = withContext(Dispatchers.IO) {
+        val cleanPath = path.trim()
+        if (cleanPath.isBlank() || cleanPath.contains("'") || cleanPath.contains(";") || cleanPath.contains("|")) {
+            return@withContext null
+        }
+        val localFile = java.io.File(cleanPath)
+        if (localFile.exists() && localFile.isFile && localFile.canRead()) {
+            return@withContext runCatching {
+                localFile.inputStream().use { input ->
+                    readBoundedBytes(input, maxBytes)
+                }
+            }.getOrNull()
+        }
+        if (!useRoot) return@withContext null
+
+        var process: Process? = null
+        try {
+            withTimeoutOrNull(4500L) {
+                process = ProcessBuilder("su", "-c", "cat '$cleanPath'")
+                    .redirectErrorStream(false)
+                    .start()
+                val p = process!!
+                val bytes = p.inputStream.use { readBoundedBytes(it, maxBytes) }
+                p.waitFor(1200, TimeUnit.MILLISECONDS)
+                bytes.takeIf { it.isNotEmpty() }
+            }
+        } catch (_: Exception) {
+            null
+        } finally {
+            runCatching { process?.destroyForcibly() }
+        }
+    }
+
+    private fun readBoundedBytes(input: java.io.InputStream, maxBytes: Int): ByteArray {
+        val out = java.io.ByteArrayOutputStream()
+        val buf = ByteArray(16384)
+        var total = 0
+        while (total < maxBytes) {
+            val toRead = minOf(buf.size, maxBytes - total)
+            val n = input.read(buf, 0, toRead)
+            if (n <= 0) break
+            out.write(buf, 0, n)
+            total += n
+        }
+        return out.toByteArray()
+    }
 }

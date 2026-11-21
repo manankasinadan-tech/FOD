@@ -37,6 +37,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             FodDetectorTheme {
                 val engineState by viewModel.engineState.collectAsStateWithLifecycle()
+                val comparatorState by viewModel.comparatorState.collectAsStateWithLifecycle()
                 val userSettings by viewModel.userSettings.collectAsStateWithLifecycle()
                 val currentTab by viewModel.currentTab.collectAsStateWithLifecycle()
                 val toastMessage by viewModel.toastMessage.collectAsStateWithLifecycle()
@@ -51,6 +52,24 @@ class MainActivity : ComponentActivity() {
                     contract = ActivityResultContracts.RequestPermission()
                 ) {
                     viewModel.onAppResumed()
+                }
+
+                val createZipLauncher = rememberLauncherForActivityResult(
+                    contract = ActivityResultContracts.CreateDocument("application/zip")
+                ) { uri ->
+                    uri?.let(viewModel::exportCurrentZipToUri)
+                }
+
+                val openZipLauncherA = rememberLauncherForActivityResult(
+                    contract = ActivityResultContracts.OpenDocument()
+                ) { uri ->
+                    uri?.let { viewModel.importZipForSlot(slotA = true, uri = it) }
+                }
+
+                val openZipLauncherB = rememberLauncherForActivityResult(
+                    contract = ActivityResultContracts.OpenDocument()
+                ) { uri ->
+                    uri?.let { viewModel.importZipForSlot(slotA = false, uri = it) }
                 }
 
                 val lifecycleOwner = LocalLifecycleOwner.current
@@ -102,9 +121,17 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
+                val zipMimeTypes = arrayOf(
+                    "application/zip",
+                    "application/x-zip-compressed",
+                    "application/octet-stream",
+                    "*/*"
+                )
+
                 FodAppShell(
                     currentTab = currentTab,
                     engineState = engineState,
+                    comparatorState = comparatorState,
                     userSettings = userSettings,
                     toastMessage = toastMessage,
                     onClearToast = viewModel::clearToast,
@@ -115,6 +142,15 @@ class MainActivity : ComponentActivity() {
                     onStartNewSession = viewModel::startNewSession,
                     onRequestStoragePermission = requestStorageAccess,
                     onSyncToSdcardFod = viewModel::syncToSdcardFod,
+                    onExportZip = {
+                        val defaultName = (engineState.exportState.sessionId.ifBlank { "fod_session" }) + ".zip"
+                        createZipLauncher.launch(defaultName)
+                    },
+                    onImportZipSlotA = { openZipLauncherA.launch(zipMimeTypes) },
+                    onImportZipSlotB = { openZipLauncherB.launch(zipMimeTypes) },
+                    onImportLocalZip = viewModel::importLocalZipForSlot,
+                    onUseLiveSession = viewModel::useLiveSessionForSlot,
+                    onClearComparator = viewModel::clearComparator,
                     onToggleRoot = viewModel::setRootEnabled,
                     onRunRootTest = viewModel::runRootTest,
                     onRequestNotificationPermission = requestNotificationAccess,

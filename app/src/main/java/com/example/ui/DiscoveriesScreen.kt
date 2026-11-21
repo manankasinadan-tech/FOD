@@ -18,13 +18,18 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.FolderZip
+import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -33,6 +38,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.engine.FodEngineState
@@ -40,9 +46,11 @@ import com.example.model.EvidenceLevel
 import com.example.ui.theme.CyanTelemetry
 import com.example.ui.theme.EmeraldVerified
 import com.example.ui.theme.SlateOutline
+import java.io.File
 
 private enum class DiscoveryFilterTab(val label: String) {
     COMPONENTS("Composants"),
+    FLATTENED_HAL("HAL à plat"),
     PATCHES("Patches & Hooks"),
     DEPENDENCIES("Dépendances"),
     EVENTS("Événements"),
@@ -53,6 +61,7 @@ private enum class DiscoveryFilterTab(val label: String) {
 fun DiscoveriesScreen(
     state: FodEngineState,
     onInspectProof: (InspectedProof) -> Unit,
+    onExportZip: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     var selectedTab by remember { mutableStateOf(DiscoveryFilterTab.COMPONENTS) }
@@ -72,7 +81,7 @@ fun DiscoveriesScreen(
             OutlinedTextField(
                 value = searchQuery,
                 onValueChange = { searchQuery = it },
-                placeholder = { Text("Filtrer par HAL, sysfs, propriété, patch...") },
+                placeholder = { Text("Filtrer par HAL, .so, .rc, permission, sysfs, patch...") },
                 leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
                 singleLine = true,
                 shape = RoundedCornerShape(12.dp),
@@ -90,6 +99,7 @@ fun DiscoveriesScreen(
                 DiscoveryFilterTab.entries.forEach { tab ->
                     val count = when (tab) {
                         DiscoveryFilterTab.COMPONENTS -> state.components.size
+                        DiscoveryFilterTab.FLATTENED_HAL -> state.flattenedHals.size
                         DiscoveryFilterTab.PATCHES -> state.modifications.size
                         DiscoveryFilterTab.DEPENDENCIES -> state.dependencies.size
                         DiscoveryFilterTab.EVENTS -> state.events.size
@@ -138,6 +148,53 @@ fun DiscoveriesScreen(
                                                 "Statut: ${cmp.status}",
                                                 "Preuve: ${cmp.rawProof}"
                                             )
+                                        )
+                                    )
+                                }
+                            )
+                        }
+                    }
+                }
+
+                DiscoveryFilterTab.FLATTENED_HAL -> {
+                    val filtered = state.flattenedHals.filter {
+                        q.isBlank() ||
+                            it.serviceName.contains(q, true) ||
+                            it.interfaceType.contains(q, true) ||
+                            it.binaryPath.contains(q, true) ||
+                            it.flattenedSourceSpec.contains(q, true) ||
+                            it.dtNeededDependencies.any { d -> d.contains(q, true) } ||
+                            it.sharedLibraries.any { s -> s.contains(q, true) }
+                    }
+                    if (filtered.isEmpty()) {
+                        item {
+                            EmptyDiscoveryCard(
+                                if (state.permissions.isEffectiveRootReady) {
+                                    "Aucun HAL FOD/biométrique mis à plat pour cette session."
+                                } else {
+                                    "Extraction ELF64 limitée sans ROOT : seuls les services visibles via VINTF/dumpsys sont listés. Activez ROOT pour disséquer les binaires /vendor/bin/hw et .so."
+                                }
+                            )
+                        }
+                    } else {
+                        items(filtered, key = { it.id }) { hal ->
+                            DiscoveryItemCard(
+                                tag = "${hal.interfaceType} • ${hal.sharedLibraries.size} .so • ${hal.dtNeededDependencies.size} DT_NEEDED",
+                                title = hal.serviceName,
+                                subtitle = hal.binaryPath,
+                                detail = "Symboles FOD: ${hal.exportedSymbols.size} | Blocs .rc: ${hal.initRcBlocks.size} | Permissions: ${hal.permissionEntries.size} | Appuyer pour lire le code source mis à plat",
+                                level = hal.evidenceLevel,
+                                onClick = {
+                                    val specLines = hal.flattenedSourceSpec
+                                        .lines()
+                                        .take(180)
+                                        .ifEmpty { listOf("Spécification non générée.") }
+                                    onInspectProof(
+                                        InspectedProof(
+                                            title = "HAL à plat : ${hal.serviceName}",
+                                            subtitle = "${hal.interfaceType} • ${hal.binaryPath}",
+                                            level = hal.evidenceLevel,
+                                            rawLines = specLines
                                         )
                                     )
                                 }
@@ -241,21 +298,52 @@ fun DiscoveriesScreen(
                 DiscoveryFilterTab.EXPORTS -> {
                     item {
                         ForensicCard(modifier = Modifier.fillMaxWidth().widthIn(max = 840.dp)) {
-                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Icon(Icons.Filled.Memory, contentDescription = null, tint = CyanTelemetry)
+                                    Text(
+                                        text = if (state.exportState.isPrimarySdcardFod) {
+                                            "Stockage actif : /sdcard/FOD/ (3 JSON + 1 TXT)"
+                                        } else {
+                                            "Stockage en zone de repli (3 JSON + 1 TXT)"
+                                        },
+                                        style = MaterialTheme.typography.titleSmall,
+                                        color = if (state.exportState.isPrimarySdcardFod) EmeraldVerified else CyanTelemetry,
+                                        fontWeight = FontWeight.SemiBold
+                                    )
+                                }
                                 Text(
-                                    text = if (state.exportState.isPrimarySdcardFod) {
-                                        "Stockage actif : /sdcard/FOD/"
-                                    } else {
-                                        "Stockage en zone de repli (permission /sdcard/FOD/ requise)"
-                                    },
-                                    style = MaterialTheme.typography.titleSmall,
-                                    color = if (state.exportState.isPrimarySdcardFod) EmeraldVerified else CyanTelemetry
-                                )
-                                Text(
-                                    text = state.exportState.sessionDirectoryPath.ifBlank { "Aucun export généré" },
+                                    text = "Dossier : ${state.exportState.sessionDirectoryPath.ifBlank { "Aucun export généré" }}",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
+                                if (state.exportState.zipFilePath.isNotBlank()) {
+                                    Text(
+                                        text = "Archive ZIP auto : ${state.exportState.zipFilePath}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = EmeraldVerified
+                                    )
+                                }
+                                Button(
+                                    onClick = onExportZip,
+                                    enabled = state.exportState.sessionId.isNotBlank(),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = CyanTelemetry,
+                                        contentColor = MaterialTheme.colorScheme.onPrimary
+                                    ),
+                                    shape = RoundedCornerShape(10.dp),
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .minimumInteractiveComponentSize()
+                                        .testTag("export_zip_button")
+                                ) {
+                                    Icon(Icons.Filled.FolderZip, contentDescription = null)
+                                    Spacer(modifier = Modifier.width(8.dp))
+                                    Text("Exporter l'archive ZIP (Enregistrer sous...)")
+                                }
                             }
                         }
                     }
@@ -271,16 +359,26 @@ fun DiscoveriesScreen(
                                 .fillMaxWidth()
                                 .widthIn(max = 840.dp)
                                 .clickable {
+                                    val diskLines = runCatching {
+                                        val f = File(state.exportState.sessionDirectoryPath, fileEntry.relativePath)
+                                        if (f.exists() && f.canRead()) {
+                                            f.bufferedReader().useLines { lines -> lines.take(180).toList() }
+                                        } else {
+                                            null
+                                        }
+                                    }.getOrNull()
                                     val dump = state.rawArtifacts.rawDumps[fileEntry.relativePath.substringAfterLast('/')]
                                     onInspectProof(
                                         InspectedProof(
                                             title = fileEntry.relativePath,
                                             subtitle = "${fileEntry.category} • ${fileEntry.sizeBytes} octets",
                                             level = EvidenceLevel.FAIT_VERIFIE,
-                                            rawLines = dump?.lines()?.take(120) ?: listOf(
-                                                "Chemin complet: ${state.exportState.sessionDirectoryPath}/${fileEntry.relativePath}",
-                                                "Taille: ${fileEntry.sizeBytes} octets"
-                                            )
+                                            rawLines = diskLines
+                                                ?: dump?.lines()?.take(180)
+                                                ?: listOf(
+                                                    "Chemin complet: ${state.exportState.sessionDirectoryPath}/${fileEntry.relativePath}",
+                                                    "Taille: ${fileEntry.sizeBytes} octets"
+                                                )
                                         )
                                     )
                                 }

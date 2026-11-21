@@ -6,38 +6,56 @@ import android.os.Environment
 import com.example.engine.RawCollectorArtifacts
 import com.example.engine.RootDiagnostics
 import com.example.model.BaselineSnapshot
+import com.example.model.ComponentCategory
 import com.example.model.ComponentDependency
 import com.example.model.DetectedModification
 import com.example.model.DeviceProfile
 import com.example.model.DiscoveredComponent
+import com.example.model.EvidenceLevel
 import com.example.model.ExportSessionState
 import com.example.model.ExportedFileEntry
+import com.example.model.FlattenedHalArtifact
 import com.example.model.FodEvent
+import com.example.model.ImportedFodSession
+import com.example.model.MechanismLayer
 import com.example.model.MechanismReconstruction
+import com.example.model.ModificationType
 import com.example.model.PermissionsState
+import com.example.model.ReconstructionOutcome
+import com.example.model.RomType
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.FileInputStream
+import java.io.FileOutputStream
+import java.io.InputStream
+import java.io.OutputStream
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.zip.ZipEntry
+import java.util.zip.ZipInputStream
+import java.util.zip.ZipOutputStream
 
 class FodStorageExporter(private val context: Context) {
 
     fun isSdcardFodAccessible(): Boolean {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()) {
-            return false
-        }
         return runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !Environment.isExternalStorageManager()) {
+                return false
+            }
             val dir = File(Environment.getExternalStorageDirectory(), "FOD")
             if (!dir.exists()) dir.mkdirs()
             dir.exists() && dir.canWrite()
         }.getOrDefault(false)
     }
 
-    fun getPrimarySdcardFodDir(): File = File(Environment.getExternalStorageDirectory(), "FOD")
+    fun getPrimarySdcardFodDir(): File = runCatching {
+        File(Environment.getExternalStorageDirectory(), "FOD")
+    }.getOrElse { File("/sdcard/FOD") }
 
     fun getFallbackFodDir(): File = context.getExternalFilesDir("FOD") ?: File(context.filesDir, "FOD")
 
@@ -55,6 +73,7 @@ class FodStorageExporter(private val context: Context) {
         components: List<DiscoveredComponent>,
         dependencies: List<ComponentDependency>,
         modifications: List<DetectedModification>,
+        flattenedHals: List<FlattenedHalArtifact>,
         reconstruction: MechanismReconstruction?,
         artifacts: RawCollectorArtifacts
     ): ExportSessionState = withContext(Dispatchers.IO) {
@@ -66,6 +85,9 @@ class FodStorageExporter(private val context: Context) {
         runCatching {
             sessionDir.mkdirs()
             evidenceDir.mkdirs()
+            // Nettoyage strict pour garantir exactement 3 JSON max + 1 seul TXT dans evidence/
+            sessionDir.listFiles()?.filter { it.isFile && it.extension.equals("json", true) }?.forEach { it.delete() }
+            evidenceDir.listFiles()?.filter { it.isFile }?.forEach { it.delete() }
         }
 
         val entries = mutableListOf<ExportedFileEntry>()
@@ -77,79 +99,350 @@ class FodStorageExporter(private val context: Context) {
             entries.add(ExportedFileEntry(relPath, target.length(), category))
         }
 
-        // 1. Profil appareil
-        writeFile("device_profile.json", deviceProfileToJson(profile).toString(2), "Profil")
-
-        // 2. Autorisations & limitations
-        writeFile("permissions_and_limits.json", permissionsToJson(permissions).toString(2), "Capacités")
-
-        // 3. État initial
-        baseline?.let {
-            writeFile("baseline_state.json", baselineToJson(it).toString(2), "Référence")
-        }
-
-        // 4. Événements horodatés
-        writeFile("events.json", eventsToJson(events).toString(2), "Événements")
-
-        // 5. Composants découverts
-        writeFile("components.json", componentsToJson(components).toString(2), "Composants")
-
-        // 6. Dépendances
-        writeFile("dependencies.json", dependenciesToJson(dependencies).toString(2), "Dépendances")
-
-        // 7. Patches, hooks & solutions alternatives
-        writeFile("patches_and_hooks.json", modificationsToJson(modifications).toString(2), "Modifications")
-
-        // 8. Cartographie du mécanisme
-        reconstruction?.let {
-            writeFile("mechanism_mapping.json", reconstructionToJson(it).toString(2), "Cartographie")
-        }
-
-        // 9. Preuves brutes et ressources accessibles
-        val accessibleResourcesJson = JSONObject().apply {
-            put("settings_targets", JSONArray(artifacts.resolvedSettingsTargets))
-            put("matched_properties_count", artifacts.matchedProperties.size)
-            put("sysfs_nodes_count", artifacts.sysfsValues.size)
-            put("hal_files_count", artifacts.discoveredHalFiles.size)
-            put("collector_notes", JSONArray(artifacts.collectorNotes))
-        }
-        writeFile("evidence/accessible_resources.json", accessibleResourcesJson.toString(2), "Preuves")
-
-        artifacts.rawDumps.forEach { (filename, body) ->
-            writeFile("evidence/$filename", body, "Preuves brutes")
-        }
-
-        // 10. Rapport maître consolidé
-        val masterReport = JSONObject().apply {
-            put("schema_version", "1.0")
+        // JSON 1 : Vue d'ensemble, profil appareil/ROM, permissions, baseline et mécanisme reconstruit
+        val json1Overview = JSONObject().apply {
+            put("schema_version", "2.0")
             put("session_id", sessionId)
             put("generated_at", RootDiagnostics.isoNow())
             put("storage_target", sessionDir.absolutePath)
             put("is_primary_sdcard_fod", usePrimary)
-            put("device", deviceProfileToJson(profile))
-            put("permissions", permissionsToJson(permissions))
+            put("device_profile", deviceProfileToJson(profile))
+            put("permissions_and_limits", permissionsToJson(permissions))
+            baseline?.let { put("baseline_state", baselineToJson(it)) }
+            reconstruction?.let { put("mechanism_reconstruction", reconstructionToJson(it)) }
             put("summary_counts", JSONObject().apply {
                 put("events", events.size)
                 put("components", components.size)
+                put("flattened_hals", flattenedHals.size)
                 put("dependencies", dependencies.size)
                 put("modifications", modifications.size)
             })
-            reconstruction?.let { put("mechanism_reconstruction", reconstructionToJson(it)) }
         }
-        writeFile("report.json", masterReport.toString(2), "Rapport maître")
+        writeFile("1_overview_and_mechanism.json", json1Overview.toString(2), "JSON 1 — Synthèse & Mécanisme")
+
+        // JSON 2 : HAL mis à plat, composants, dépendances, .rc, permissions XML, sysfs, propriétés et patches
+        val json2HalAndComponents = JSONObject().apply {
+            put("session_id", sessionId)
+            put("flattened_hals", flattenedHalsToJson(flattenedHals))
+            put("components", componentsToJson(components))
+            put("dependencies", dependenciesToJson(dependencies))
+            put("modifications_and_patches", modificationsToJson(modifications))
+            put("properties", JSONObject(artifacts.matchedProperties))
+            put("sysfs_nodes", JSONObject(artifacts.sysfsValues))
+            put("rc_files", JSONObject(artifacts.halBundle.rcFileContents))
+            put("permission_xmls", JSONObject(artifacts.halBundle.permissionXmlContents))
+            put("vintf_manifests", JSONObject(artifacts.halBundle.vintfManifestContents))
+            put("selinux_contexts", JSONArray(artifacts.halBundle.selinuxContextLines))
+        }
+        writeFile("2_hal_components_and_porting.json", json2HalAndComponents.toString(2), "JSON 2 — HAL à plat & Portage")
+
+        // JSON 3 : Chronologie complète des événements, déclencheurs et ressources accessibles
+        val json3Events = JSONObject().apply {
+            put("session_id", sessionId)
+            put("events_count", events.size)
+            put("events", eventsToJson(events))
+            put("accessible_resources", JSONObject().apply {
+                put("settings_targets", JSONArray(artifacts.resolvedSettingsTargets))
+                put("discovered_services", JSONArray(artifacts.discoveredServices))
+                put("discovered_hal_files", JSONArray(artifacts.discoveredHalFiles))
+                put("discovered_overlays", JSONArray(artifacts.discoveredOverlays))
+                put("discovered_modules", JSONArray(artifacts.discoveredModules))
+                put("collector_notes", JSONArray(artifacts.collectorNotes))
+            })
+        }
+        writeFile("3_events_and_timeline.json", json3Events.toString(2), "JSON 3 — Chronologie & Ressources")
+
+        // Fichier TXT unique dans evidence/ rassemblant toutes les preuves brutes
+        val consolidatedEvidence = buildConsolidatedEvidenceTxt(
+            sessionId = sessionId,
+            profile = profile,
+            permissions = permissions,
+            reconstruction = reconstruction,
+            flattenedHals = flattenedHals,
+            artifacts = artifacts
+        )
+        writeFile("evidence/all_evidence.txt", consolidatedEvidence, "Preuve unique consolidée (.txt)")
+
+        // Export ZIP automatique de la session à côté du dossier session
+        val zipFile = File(rootDir, "$sessionId.zip")
+        val zipWritten = runCatching {
+            writeDirectoryToZip(sessionDir, FileOutputStream(zipFile))
+            zipFile.absolutePath
+        }.getOrDefault("")
 
         ExportSessionState(
             sessionId = sessionId,
             sessionDirectoryPath = sessionDir.absolutePath,
+            zipFilePath = zipWritten,
             isPrimarySdcardFod = usePrimary,
             pendingSyncToSdcard = !usePrimary,
             exportedFiles = entries,
             lastExportIso = RootDiagnostics.isoNow(),
             exportMessage = if (usePrimary) {
-                "Enregistré dans /sdcard/FOD/$sessionId"
+                "3 JSON + 1 evidence/all_evidence.txt enregistrés dans /sdcard/FOD/$sessionId"
             } else {
                 "Permission /sdcard/FOD/ absente : sauvegardé en zone de repli (${sessionDir.absolutePath}), prêt à synchroniser."
             }
+        )
+    }
+
+    suspend fun exportZipToStream(sessionId: String, outputStream: OutputStream): Result<Long> = withContext(Dispatchers.IO) {
+        val dir = findSessionDir(sessionId) ?: return@withContext Result.failure(
+            IllegalStateException("Dossier de session introuvable pour $sessionId.")
+        )
+        runCatching {
+            val bytes = writeDirectoryToZipBytes(dir)
+            outputStream.use { it.write(bytes) }
+            bytes.size.toLong()
+        }
+    }
+
+    suspend fun listLocalZipFiles(): List<File> = withContext(Dispatchers.IO) {
+        val dirs = listOf(getPrimarySdcardFodDir(), getFallbackFodDir())
+        dirs.flatMap { d ->
+            runCatching {
+                d.listFiles()?.filter { it.isFile && it.extension.equals("zip", true) }.orEmpty()
+            }.getOrDefault(emptyList())
+        }.distinctBy { it.absolutePath }.sortedByDescending { it.lastModified() }
+    }
+
+    suspend fun importSessionFromZip(inputStream: InputStream, sourceLabel: String): Result<ImportedFodSession> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val jsonFiles = linkedMapOf<String, String>()
+                ZipInputStream(inputStream).use { zis ->
+                    var entry: ZipEntry? = zis.nextEntry
+                    while (entry != null) {
+                        if (!entry.isDirectory && entry.name.endsWith(".json", ignoreCase = true)) {
+                            val name = entry.name.substringAfterLast('/')
+                            val content = zis.readBytes().toString(Charsets.UTF_8)
+                            jsonFiles[name] = content
+                        }
+                        zis.closeEntry()
+                        entry = zis.nextEntry
+                    }
+                }
+
+                if (jsonFiles.isEmpty()) {
+                    error("L'archive ZIP ne contient aucun rapport JSON FOD Detector valide.")
+                }
+
+                parseImportedSession(jsonFiles, sourceLabel)
+            }
+        }
+
+    suspend fun importSessionFromLocalZip(file: File): Result<ImportedFodSession> = withContext(Dispatchers.IO) {
+        runCatching {
+            FileInputStream(file).use { fis ->
+                importSessionFromZip(fis, file.name).getOrThrow()
+            }
+        }
+    }
+
+    fun buildImportedSessionFromLive(
+        sessionId: String,
+        profile: DeviceProfile,
+        permissions: PermissionsState,
+        components: List<DiscoveredComponent>,
+        modifications: List<DetectedModification>,
+        flattenedHals: List<FlattenedHalArtifact>,
+        reconstruction: MechanismReconstruction?,
+        artifacts: RawCollectorArtifacts,
+        eventsCount: Int
+    ): ImportedFodSession {
+        return ImportedFodSession(
+            sourceLabel = "Session courante ($sessionId)",
+            sessionId = sessionId,
+            manufacturerModel = "${profile.manufacturer} ${profile.model}".trim().ifBlank { "Appareil courant" },
+            romType = profile.romType,
+            romLabel = profile.romType.label,
+            androidRelease = profile.androidRelease,
+            sdkInt = profile.sdkInt,
+            rootActive = permissions.isEffectiveRootReady,
+            outcome = reconstruction?.outcome ?: ReconstructionOutcome.OBSERVATION_PARTIELLE,
+            outcomeLabel = reconstruction?.outcome?.label ?: "En cours",
+            mechanismSummary = reconstruction?.summary.orEmpty(),
+            causalExecutionPath = reconstruction?.causalExecutionPath.orEmpty(),
+            firstBreakDescription = reconstruction?.firstBreakDescription,
+            firstBreakProof = reconstruction?.firstBreakProof,
+            flattenedHals = flattenedHals,
+            components = components,
+            modifications = modifications,
+            properties = artifacts.matchedProperties,
+            sysfsNodes = artifacts.sysfsValues,
+            rcBlocks = artifacts.halBundle.rcFileContents.entries.map { "${it.key}:\n${it.value}" },
+            permissionEntries = artifacts.halBundle.permissionXmlContents.entries.map { "${it.key}:\n${it.value}" },
+            eventsCount = eventsCount
+        )
+    }
+
+    private fun findSessionDir(sessionId: String): File? {
+        val primary = File(getPrimarySdcardFodDir(), sessionId)
+        if (primary.exists() && primary.isDirectory) return primary
+        val fallback = File(getFallbackFodDir(), sessionId)
+        if (fallback.exists() && fallback.isDirectory) return fallback
+        return null
+    }
+
+    private fun writeDirectoryToZip(dir: File, out: OutputStream) {
+        val bytes = writeDirectoryToZipBytes(dir)
+        out.use { it.write(bytes) }
+    }
+
+    private fun writeDirectoryToZipBytes(dir: File): ByteArray {
+        val baos = ByteArrayOutputStream()
+        ZipOutputStream(baos).use { zos ->
+            val files = dir.walkTopDown().filter { it.isFile }.toList()
+            for (file in files) {
+                val rel = file.relativeTo(dir).path.replace("\\", "/")
+                zos.putNextEntry(ZipEntry(rel))
+                file.inputStream().use { it.copyTo(zos) }
+                zos.closeEntry()
+            }
+        }
+        return baos.toByteArray()
+    }
+
+    private fun buildConsolidatedEvidenceTxt(
+        sessionId: String,
+        profile: DeviceProfile,
+        permissions: PermissionsState,
+        reconstruction: MechanismReconstruction?,
+        flattenedHals: List<FlattenedHalArtifact>,
+        artifacts: RawCollectorArtifacts
+    ): String = buildString {
+        appendLine("######################################################################")
+        appendLine("# FOD DETECTOR — EVIDENCE CONSOLIDÉE UNIQUE (LECTURE SEULE)")
+        appendLine("# Session : $sessionId | Généré : ${RootDiagnostics.isoNow()}")
+        appendLine("# Appareil : ${profile.manufacturer} ${profile.model} | ROM : ${profile.romType.label}")
+        appendLine("# Android : ${profile.androidRelease} (API ${profile.sdkInt}) | ROOT actif : ${permissions.isEffectiveRootReady}")
+        appendLine("######################################################################")
+        appendLine()
+        reconstruction?.let {
+            appendLine("==== RÉSUMÉ RECONSTRUCTION MÉCANISME ====")
+            appendLine("Résultat : ${it.outcome.label}")
+            appendLine(it.summary)
+            it.firstBreakDescription?.let { br -> appendLine("Première rupture : $br") }
+            it.firstBreakProof?.let { pr -> appendLine("Preuve rupture : $pr") }
+            appendLine()
+        }
+        appendLine("==== HAL MIS À PLAT (SPÉCIFICATION PORTAGE) ====")
+        if (flattenedHals.isEmpty()) {
+            appendLine("# Aucun HAL mis à plat disponible.")
+        } else {
+            flattenedHals.forEach { hal ->
+                appendLine(hal.flattenedSourceSpec)
+                appendLine()
+            }
+        }
+        artifacts.rawDumps.forEach { (name, body) ->
+            appendLine("==== SECTION BRUTE : $name ====")
+            appendLine(body.ifBlank { "(vide)" })
+            appendLine()
+        }
+    }
+
+    private fun parseImportedSession(jsonFiles: Map<String, String>, sourceLabel: String): ImportedFodSession {
+        val ovJson = JSONObject(jsonFiles["1_overview_and_mechanism.json"] ?: jsonFiles["report.json"] ?: "{}")
+        val halJson = JSONObject(jsonFiles["2_hal_components_and_porting.json"] ?: "{}")
+        val evtJson = JSONObject(jsonFiles["3_events_and_timeline.json"] ?: "{}")
+
+        val dev = ovJson.optJSONObject("device_profile") ?: ovJson.optJSONObject("device") ?: JSONObject()
+        val perms = ovJson.optJSONObject("permissions_and_limits") ?: ovJson.optJSONObject("permissions") ?: JSONObject()
+        val rec = ovJson.optJSONObject("mechanism_reconstruction") ?: JSONObject()
+
+        val romType = runCatching { RomType.valueOf(dev.optString("rom_type", "INDETERMINE")) }
+            .getOrDefault(RomType.INDETERMINE)
+        val outcome = runCatching { ReconstructionOutcome.valueOf(rec.optString("outcome", "OBSERVATION_PARTIELLE")) }
+            .getOrDefault(ReconstructionOutcome.OBSERVATION_PARTIELLE)
+
+        val flattenedHals = mutableListOf<FlattenedHalArtifact>()
+        val halsArr = halJson.optJSONArray("flattened_hals") ?: JSONArray()
+        for (i in 0 until halsArr.length()) {
+            val o = halsArr.getJSONObject(i)
+            flattenedHals.add(
+                FlattenedHalArtifact(
+                    id = o.optString("id", "imp-hal-$i"),
+                    serviceName = o.optString("service_name"),
+                    interfaceType = o.optString("interface_type"),
+                    binaryPath = o.optString("binary_path"),
+                    sharedLibraries = jsonArrayToStringList(o.optJSONArray("shared_libraries")),
+                    dtNeededDependencies = jsonArrayToStringList(o.optJSONArray("dt_needed")),
+                    exportedSymbols = jsonArrayToStringList(o.optJSONArray("exported_symbols")),
+                    referencedNodes = jsonArrayToStringList(o.optJSONArray("referenced_nodes")),
+                    initRcBlocks = jsonArrayToStringList(o.optJSONArray("init_rc_blocks")),
+                    permissionEntries = jsonArrayToStringList(o.optJSONArray("permission_entries")),
+                    selinuxContexts = jsonArrayToStringList(o.optJSONArray("selinux_contexts")),
+                    vintfEntries = jsonArrayToStringList(o.optJSONArray("vintf_entries")),
+                    flattenedSourceSpec = o.optString("flattened_source_spec")
+                )
+            )
+        }
+
+        val components = mutableListOf<DiscoveredComponent>()
+        val compArr = halJson.optJSONArray("components") ?: JSONArray()
+        for (i in 0 until compArr.length()) {
+            val o = compArr.getJSONObject(i)
+            components.add(
+                DiscoveredComponent(
+                    id = o.optString("id", "imp-cmp-$i"),
+                    name = o.optString("name"),
+                    category = runCatching { ComponentCategory.valueOf(o.optString("category")) }.getOrDefault(ComponentCategory.FRAMEWORK_CLASS),
+                    layer = runCatching { MechanismLayer.valueOf(o.optString("layer")) }.getOrDefault(MechanismLayer.FRAMEWORK),
+                    pathOrIdentifier = o.optString("identifier"),
+                    status = o.optString("status"),
+                    evidenceLevel = runCatching { EvidenceLevel.valueOf(o.optString("evidence_level")) }.getOrDefault(EvidenceLevel.FAIT_VERIFIE),
+                    rawProof = o.optString("raw_proof"),
+                    discoveryWave = o.optInt("discovery_wave", 1)
+                )
+            )
+        }
+
+        val modifications = mutableListOf<DetectedModification>()
+        val modArr = halJson.optJSONArray("modifications_and_patches") ?: JSONArray()
+        for (i in 0 until modArr.length()) {
+            val o = modArr.getJSONObject(i)
+            modifications.add(
+                DetectedModification(
+                    id = o.optString("id", "imp-mod-$i"),
+                    type = runCatching { ModificationType.valueOf(o.optString("type")) }.getOrDefault(ModificationType.CUSTOM_PROP),
+                    name = o.optString("name"),
+                    target = o.optString("target"),
+                    roleSummary = o.optString("role_summary"),
+                    evidenceLevel = runCatching { EvidenceLevel.valueOf(o.optString("evidence_level")) }.getOrDefault(EvidenceLevel.FAIT_VERIFIE),
+                    rawProof = o.optString("raw_proof")
+                )
+            )
+        }
+
+        val propsMap = jsonObjectToStringMap(halJson.optJSONObject("properties"))
+        val sysfsMap = jsonObjectToStringMap(halJson.optJSONObject("sysfs_nodes"))
+        val rcBlocks = jsonObjectToStringMap(halJson.optJSONObject("rc_files")).entries.map { "${it.key}:\n${it.value}" }
+        val permEntries = jsonObjectToStringMap(halJson.optJSONObject("permission_xmls")).entries.map { "${it.key}:\n${it.value}" }
+
+        return ImportedFodSession(
+            sourceLabel = sourceLabel,
+            sessionId = ovJson.optString("session_id", sourceLabel),
+            manufacturerModel = "${dev.optString("manufacturer")} ${dev.optString("model")}".trim().ifBlank { "Appareil importé" },
+            romType = romType,
+            romLabel = dev.optString("rom_label", romType.label),
+            androidRelease = dev.optString("android_release", "?"),
+            sdkInt = dev.optInt("sdk_int", 0),
+            rootActive = perms.optBoolean("root_available", false),
+            outcome = outcome,
+            outcomeLabel = rec.optString("outcome_label", outcome.label),
+            mechanismSummary = rec.optString("summary", "Résumé non présent dans l'archive."),
+            causalExecutionPath = jsonArrayToStringList(rec.optJSONArray("causal_execution_path")),
+            firstBreakDescription = rec.optString("first_break_description").takeIf { it.isNotBlank() && it != "null" },
+            firstBreakProof = rec.optString("first_break_proof").takeIf { it.isNotBlank() && it != "null" },
+            flattenedHals = flattenedHals,
+            components = components,
+            modifications = modifications,
+            properties = propsMap,
+            sysfsNodes = sysfsMap,
+            rcBlocks = rcBlocks,
+            permissionEntries = permEntries,
+            eventsCount = evtJson.optInt("events_count", 0)
         )
     }
 
@@ -164,7 +457,27 @@ class FodStorageExporter(private val context: Context) {
         val dst = File(getPrimarySdcardFodDir(), sessionId)
         dst.mkdirs()
         src.copyRecursively(dst, overwrite = true)
+        val srcZip = File(getFallbackFodDir(), "$sessionId.zip")
+        if (srcZip.exists()) {
+            srcZip.copyTo(File(getPrimarySdcardFodDir(), "$sessionId.zip"), overwrite = true)
+        }
         Result.success(dst.absolutePath)
+    }
+
+    private fun jsonArrayToStringList(arr: JSONArray?): List<String> {
+        if (arr == null) return emptyList()
+        return (0 until arr.length()).map { arr.optString(it) }
+    }
+
+    private fun jsonObjectToStringMap(obj: JSONObject?): Map<String, String> {
+        if (obj == null) return emptyMap()
+        val map = linkedMapOf<String, String>()
+        val keys = obj.keys()
+        while (keys.hasNext()) {
+            val k = keys.next()
+            map[k] = obj.optString(k)
+        }
+        return map
     }
 
     private fun deviceProfileToJson(p: DeviceProfile) = JSONObject().apply {
@@ -219,6 +532,26 @@ class FodStorageExporter(private val context: Context) {
         put("refresh_rate_hz", b.refreshRateHz.toDouble())
         put("matched_properties", JSONObject(b.keyProperties))
         put("sysfs_snapshot", JSONObject(b.readableSysfsSnapshot))
+    }
+
+    private fun flattenedHalsToJson(items: List<FlattenedHalArtifact>) = JSONArray().apply {
+        items.forEach { h ->
+            put(JSONObject().apply {
+                put("id", h.id)
+                put("service_name", h.serviceName)
+                put("interface_type", h.interfaceType)
+                put("binary_path", h.binaryPath)
+                put("shared_libraries", JSONArray(h.sharedLibraries))
+                put("dt_needed", JSONArray(h.dtNeededDependencies))
+                put("exported_symbols", JSONArray(h.exportedSymbols))
+                put("referenced_nodes", JSONArray(h.referencedNodes))
+                put("init_rc_blocks", JSONArray(h.initRcBlocks))
+                put("permission_entries", JSONArray(h.permissionEntries))
+                put("selinux_contexts", JSONArray(h.selinuxContexts))
+                put("vintf_entries", JSONArray(h.vintfEntries))
+                put("flattened_source_spec", h.flattenedSourceSpec)
+            })
+        }
     }
 
     private fun eventsToJson(events: List<FodEvent>) = JSONArray().apply {

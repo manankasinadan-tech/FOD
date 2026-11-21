@@ -23,7 +23,8 @@ data class RawCollectorArtifacts(
     val resolvedSettingsTargets: List<String> = emptyList(),
     val enrolledTemplateCount: Int? = null,
     val logcatLines: List<String> = emptyList(),
-    val collectorNotes: List<String> = emptyList()
+    val collectorNotes: List<String> = emptyList(),
+    val halBundle: HalExtractionBundle = HalExtractionBundle()
 )
 
 object UniversalFodCollectors {
@@ -223,7 +224,15 @@ object UniversalFodCollectors {
         // 4. Découverte dynamique de nœuds sysfs / proc liés à FOD, HBM, tactile, affichage
         val sysfsValues = discoverSysfsAndProcNodes(useRoot)
 
-        // 5. Journaux logcat bornés (vague 0 ou vague approfondie)
+        // 5. Extraction et mise à plat complète des HAL, .rc, permissions XML, VINTF et ELF64
+        val halBundle = ElfAndHalInspector.extractAndFlattenHals(
+            useRoot = useRoot,
+            discoveredServices = services.distinct(),
+            discoveredHalFiles = halFiles.distinct(),
+            discoveredInitLines = initFiles.distinct()
+        )
+
+        // 6. Journaux logcat bornés (vague 0 ou vague approfondie)
         val logCmd = if (useRoot) {
             "logcat -b main,system,events,crash -d -t ${if (wave > 0) 350 else 180}"
         } else {
@@ -257,6 +266,30 @@ object UniversalFodCollectors {
         rawDumps["sysfs_snapshot.txt"] = sysfsValues.entries.joinToString("\n") { "${it.key} = ${it.value}" }
             .ifBlank { "# Aucun nœud sysfs/proc FOD lisible avec les droits actuels" }
         rawDumps["logcat_fod.txt"] = logLines.joinToString("\n").ifBlank { "# Aucune ligne logcat FOD filtrée dans la fenêtre" }
+        rawDumps["hal_flattened_specs.txt"] = halBundle.flattenedHals.joinToString("\n\n") { it.flattenedSourceSpec }
+            .ifBlank { "# Aucune fiche HAL mise à plat générée" }
+        rawDumps["rc_and_permissions.txt"] = buildString {
+            appendLine("=== CONTENUS COMPLETS DES FICHIERS INIT (.rc) ===")
+            halBundle.rcFileContents.forEach { (p, txt) ->
+                appendLine("--- $p ---")
+                appendLine(txt)
+                appendLine()
+            }
+            appendLine("=== PERMISSIONS XML BIOMÉTRIQUES / FOD ===")
+            halBundle.permissionXmlContents.forEach { (p, txt) ->
+                appendLine("--- $p ---")
+                appendLine(txt)
+                appendLine()
+            }
+            appendLine("=== MANIFESTS VINTF ===")
+            halBundle.vintfManifestContents.forEach { (p, txt) ->
+                appendLine("--- $p ---")
+                appendLine(txt)
+                appendLine()
+            }
+            appendLine("=== CONTEXTES SELINUX ===")
+            halBundle.selinuxContextLines.forEach { appendLine(it) }
+        }
 
         return RawCollectorArtifacts(
             rawDumps = rawDumps,
@@ -270,7 +303,8 @@ object UniversalFodCollectors {
             resolvedSettingsTargets = resolvedTargets.distinct(),
             enrolledTemplateCount = enrolledCount,
             logcatLines = logLines,
-            collectorNotes = notes
+            collectorNotes = notes,
+            halBundle = halBundle
         )
     }
 
